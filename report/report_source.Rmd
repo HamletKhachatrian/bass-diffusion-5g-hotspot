@@ -1,0 +1,221 @@
+---
+title: "Forecasting the diffusion of the Netgear Nighthawk M3 with a Bass model"
+subtitle: "DS 223 Marketing Analytics"
+author: "Hamlet Khachatryan"
+output:
+  pdf_document:
+    latex_engine: pdflatex
+    toc: false
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 7, fig.height = 3, out.width = "95%",
+                      tidy = FALSE)
+libs <- c("ggplot2", "ggpubr", "knitr", "diffusion")
+invisible(lapply(libs, library, character.only = TRUE))
+theme_set(theme_grey(base_size = 9))
+
+bass.f <- function(t, p, q) {
+  ((p + q)^2 / p) * exp(-(p + q) * t) / (1 + (q / p) * exp(-(p + q) * t))^2
+}
+bass.F <- function(t, p, q) {
+  (1 - exp(-(p + q) * t)) / (1 + (q / p) * exp(-(p + q) * t))
+}
+```
+
+## Step 1. Chosen innovation
+
+Netgear Nighthawk M3 | Portable 5G Wi-Fi router offering speeds up to 2.5 Gbps for up to 32 devices, with a 13-hour battery.
+
+Link: <https://time.com/collections/best-inventions-2025/7318264/netgear-nighthawk-m3/>
+
+One product has too little public sales history to model, so I look at the category it belongs to: portable 5G hotspots, worldwide.
+
+## Step 2. Look-alike innovation
+
+I chose 4G/LTE mobile broadband, and in particular the 4G "MiFi" type hotspot that came before the M3. The two devices do the same job: they take a cellular signal and share it over Wi-Fi with other devices. Both only make sense once an operator has built the network, both are sold together with a data plan, and both compete with simply tethering from a phone. A 5G hotspot is basically the next version of the 4G one, and it appeals to similar buyers, such as travellers, remote workers and people without fixed broadband.
+
+In terms of market impact, both fit the pattern the Bass model is built for. A few innovators start, and later growth comes mostly from imitators who follow others as coverage spreads and prices fall. 4G also gives me a complete curve, with yearly additions that rise, peak and fall, while 5G hotspots are still partway through. The weak point is that the data counts 4G subscriptions, not hotspot devices. I therefore use it only for the shape of adoption (p and q) and estimate the market size m for hotspots myself in Step 7.
+
+\newpage
+
+## Step 3. Historical data
+
+Global 4G/LTE subscriptions in millions, from Ericsson via Statista (the eight regions added together). The series I model is the number of **new** subscriptions per year, which is the yearly change in the total. I keep 2012 to 2022 only, because after 2022 total subscriptions fall as people move to 5G, and the Bass model describes growth, not decline.
+
+```{r data}
+g4 <- read.csv("data/4g_lte_global.csv")
+d  <- g4[g4$year <= 2022, ]
+d$t <- 1:nrow(d)
+kable(d[, c("year", "subscriptions", "sales")],
+      col.names = c("Year", "Subscriptions (m)", "New subscriptions (m)"),
+      row.names = FALSE)
+```
+
+```{r plot-data}
+ggplot(data = d, aes(x = year, y = sales)) +
+  geom_bar(stat = "identity") +
+  ggtitle("4G/LTE new subscriptions per year, mln") +
+  scale_x_continuous(breaks = 2012:2022)
+```
+
+Source: Ericsson (2025), *Number of mobile 4G/LTE subscriptions worldwide by region from 2012 to 2031 (in millions)*, via Statista (Statistic ID 521572).
+
+## Step 4. Estimating the Bass model parameters
+
+**Method 1: non-linear least squares with `nls()`**
+
+```{r nls}
+bass_m <- nls(sales ~ m*(((p+q)^2/p)*exp(-(p+q)*t))/(1+(q/p)*exp(-(p+q)*t))^2,
+              data = d,
+              start = list(m = sum(d$sales), p = 0.02, q = 0.4))
+summary(bass_m)
+```
+
+**Method 2: the `diffusion` package.**
+
+```{r diffusion}
+diff_m <- diffusion(d$sales)
+diff_m
+```
+
+```{r compare}
+p <- unname(coef(bass_m)["p"]); q <- unname(coef(bass_m)["q"])
+m <- unname(coef(bass_m)["m"])
+w <- diff_m$w   # named vector: m, p, q
+kable(data.frame(Method = c("1. nls()", "2. diffusion()"),
+                 p = round(c(p, w[["p"]]), 4), q = round(c(q, w[["q"]]), 4),
+                 m = round(c(m, w[["m"]]), 0)),
+      col.names = c("Method", "p", "q", "m (millions)"))
+```
+
+I use the `nls()` estimates in the rest of the report: p = `r round(p, 4)`, q = `r round(q, 4)`, m = `r round(m)` million. The two methods are close to each other. I check the fit by multiplying $f(t)$ by $m$ and plotting it on top of the data, and I compare the predicted peak with the actual one.
+
+```{r fit-plot}
+d$pred_sales <- bass.f(d$t, p, q) * m
+ggplot(data = d, aes(x = year, y = sales)) +
+  geom_bar(stat = "identity") +
+  geom_point(mapping = aes(x = year, y = pred_sales), color = "red") +
+  ggtitle("4G/LTE new subscriptions: data (bars) and Bass fit (red), mln") +
+  scale_x_continuous(breaks = 2012:2022)
+```
+
+```{r peak}
+data.frame(Predicted = log(q/p)/(p + q), Actual = which.max(d$sales))
+```
+
+The imitation coefficient $q$ is about `r round(q/p)` times the innovation coefficient $p$, so adoption was driven mostly by imitation. The estimated $m$ (about `r round(m/1000, 1)` billion) is close to the level the total actually reached by 2022 (`r round(max(d$subscriptions)/1000, 1)` billion). The fit is good but not perfect: the model starts too high in 2012 to 2013 and the predicted peak (t = `r round(log(q/p)/(p+q), 1)`, about `r round(2011 + log(q/p)/(p+q))`) comes about `r round(log(q/p)/(p+q) - which.max(d$sales), 1)` years later than the actual one (t = `r which.max(d$sales)`, `r d$year[which.max(d$sales)]`). The standard error of $p$ is about `r round(100 * summary(bass_m)$coefficients["p", 2] / p)`% of its estimate, so $p$ is the least precise of the three numbers.
+
+## Step 5. Predicting the diffusion of the 5G hotspot
+
+I take $p$ and $q$ from the look-alike and use my own estimate of $m$ (Step 7). The first 5G hotspots appeared in 2019, so $t=1$ is 2019.
+
+**Check on 5G subscriptions.** Before trusting the look-alike, I tested it on the next network generation. I kept $p$ and $q$ from 4G and fitted only $m$ to actual 5G new subscriptions for 2019 to 2025, then compared the curve with Ericsson's forecast to 2030.
+
+```{r check5g}
+g5 <- read.csv("data/5g_subscriptions_global.csv")
+g5$sales <- c(g5$subscriptions[1], diff(g5$subscriptions))
+a5 <- g5[g5$year >= 2019 & g5$year <= 2025, ]
+a5$t <- 1:nrow(a5)
+fit5 <- nls(sales ~ M*bass.f(t, p, q), data = a5,
+            start = list(M = 5000), algorithm = "port", lower = 0)
+
+chk <- g5[g5$year >= 2019, ]
+chk$t <- 1:nrow(chk)
+chk$bass <- coef(fit5)[["M"]] * bass.f(chk$t, p, q)
+chk$error <- round((chk$bass / chk$sales - 1) * 100, 1)
+kable(data.frame(Year = chk$year, Data = round(chk$sales, 1),
+                 Bass = round(chk$bass, 1), `Error %` = chk$error,
+                 Type = ifelse(chk$forecast, "Ericsson forecast", "actual"),
+                 check.names = FALSE),
+      col.names = c("Year", "New 5G subs (m)", "Bass (m)", "Error %", "Type"))
+```
+
+```{r plot5g}
+ggplot(chk, aes(x = year)) +
+  geom_bar(aes(y = sales, fill = forecast), stat = "identity") +
+  geom_point(aes(y = bass), color = "red") +
+  scale_fill_manual(values = c("grey35", "grey75"),
+                    labels = c("actual", "Ericsson forecast"), name = NULL) +
+  labs(y = "mln", title = "New 5G subscriptions: data (bars) and Bass with 4G p, q (red)") +
+  scale_x_continuous(breaks = 2019:2030)
+```
+
+With the 4G values of $p$ and $q$, the curve follows actual 5G additions reasonably well from 2020 to 2025 (errors between `r min(chk$error[chk$year >= 2020 & chk$year <= 2025])`% and `r max(chk$error[chk$year >= 2020 & chk$year <= 2025])`%; 2019 is a tiny base of 12 million and is overestimated). After 2025 the two disagree: Ericsson forecasts 5G additions to stay at roughly 600 to 730 million a year until 2030, while the 4G-shaped curve starts falling after its peak. So 5G seems to spread over a longer period than 4G did, and 5G hotspots probably will too. I therefore treat the curve below as the **fast** version of the diffusion path.
+
+**Prediction for hotspots.** For the hotspot, the yearly adopters are $a(t) = m \times f(t)$ with the $p$ and $q$ above and $m$ from Step 7.
+
+## Step 6. Scope: worldwide
+
+I analysed the whole world. Both Ericsson series are global, so the look-alike and the target are measured the same way, and I did not find country series with a long enough history. The data also show that demand is spread across regions rather than concentrated in one place: in 2022 no region held more than about a quarter of all 4G subscriptions.
+
+```{r regions}
+reg <- read.csv("data/4g_lte_by_region.csv", check.names = FALSE)
+x <- unlist(reg[reg$year == 2022, -1])
+share <- sort(round(100 * x / sum(x), 1), decreasing = TRUE)
+kable(data.frame(Region = names(share), Share = as.numeric(share)),
+      col.names = c("Region", "Share of global 4G subscriptions, 2022 (%)"))
+```
+
+## Step 7. Adopters by year
+
+No free source gives the number of people who own a dedicated hotspot, so I estimated $m$ with a simple Fermi calculation:
+
+$$m = \text{5G subscriptions in 2030} \times s$$
+
+where $s$ is the share of 5G subscriptions held in a dedicated portable hotspot. Most 5G subscriptions are phones, and phones can already share their connection, so a dedicated hotspot is a niche device. I assume $s = 1.5\%$ as the base case, with $0.75\%$ as a low case and $3\%$ as a high case. These shares are my own assumptions, not data. I treat $m$ as the total number of devices in use and ignore replacement purchases.
+
+Ericsson's 2030 forecast for 5G subscriptions is `r format(g5$subscriptions[g5$year == 2030], big.mark = ",")` million.
+
+```{r fermi}
+subs2030 <- g5$subscriptions[g5$year == 2030]
+shares <- c(Low = 0.0075, Base = 0.015, High = 0.03)
+M <- shares * subs2030
+kable(data.frame(Case = names(shares), `Share s` = paste0(100 * shares, "%"),
+                 `m (million devices)` = round(M, 1), check.names = FALSE), row.names = FALSE)
+```
+
+```{r adopters}
+years <- 2019:2035
+t <- 1:length(years)
+adopters <- sapply(M, function(x) x * bass.f(t, p, q))
+tab <- data.frame(Year = years,
+                  Cumulative_base = round(cumsum(adopters[, "Base"]), 1),
+                  New_low = round(adopters[, "Low"], 1),
+                  New_base = round(adopters[, "Base"], 1),
+                  New_high = round(adopters[, "High"], 1))
+kable(tab[tab$Year <= 2030, ],
+      col.names = c("Year", "Cumulative, base (m)", "New, low (m)",
+                    "New, base (m)", "New, high (m)"))
+```
+
+```{r adopters-plot}
+long <- data.frame(year = rep(years, 3), case = rep(names(M), each = length(years)),
+                   new = as.vector(adopters),
+                   cum = as.vector(apply(adopters, 2, cumsum)))
+new_plot <- ggplot(long, aes(year, new, color = case)) + geom_line() +
+  labs(title = "New adopters per year (mln)", y = NULL)
+cum_plot <- ggplot(long, aes(year, cum, color = case)) + geom_line() +
+  labs(title = "Cumulative adopters (mln)", y = NULL)
+ggarrange(cum_plot, new_plot, common.legend = TRUE, legend = "bottom")
+```
+
+```{r results-numbers, include=FALSE}
+tstar <- log(q/p)/(p + q)
+peak_new <- max(adopters[, "Base"])
+cum2025 <- sum(adopters[years <= 2025, "Base"])
+```
+
+**Result.** In the base case there are about `r round(cum2025)` million portable 5G hotspots in use by the end of 2025 and about `r round(M["Base"])` million at saturation. New adopters peak around `r round(2018 + tstar)` (t = `r round(tstar, 1)`) at roughly `r round(peak_new)` million a year and then fall. The Nighthawk M3, recognised by TIME in 2025, would therefore enter in the later part of the category's growth phase. Given the check in Step 5, this is the fast case: if 5G hotspots spread as slowly as 5G subscriptions are forecast to, the peak would come later and the fall would be gentler.
+
+**Limits.** The biggest uncertainty is $m$, which rests on my assumed share, so the low and high cases matter more than the base line. The 4G data counts subscriptions rather than hotspot devices, $p$ is not precisely estimated, and the Bass model has no price or competition terms (phone tethering, home 5G routers).
+
+## References
+
+1. Hovhannisyan, K. *DS 223 Marketing Analytics: Bass Model for Innovation Diffusion* (lecture slides). American University of Armenia.
+2. Ericsson (2025). Number of mobile 4G/LTE subscriptions worldwide by region from 2012 to 2031 (in millions). Statista, Statistic ID 521572, published November 2025. Retrieved 14 October 2026 from https://www.statista.com
+3. Ericsson (2025). Number of 5G subscriptions worldwide from 2018 to 2030 (in millions). Statista, Statistic ID 1199693, published June 2025. Retrieved 14 October 2026 from https://www.statista.com
+4. TIME (2025). The Best Inventions of 2025: Netgear Nighthawk M3. https://time.com/collections/best-inventions-2025/7318264/netgear-nighthawk-m3/
+5. Schaer, O., Kourentzes, N., & Svetunkov, I. *diffusion: Forecast the Diffusion of New Products*, R package, version 0.4.0.
